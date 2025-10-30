@@ -1,0 +1,266 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# Cybersecurity Lab - Vagrant Configuration
+# Créer un environnement de lab complet avec VirtualBox
+
+Vagrant.configure("2") do |config|
+  
+  # Configuration réseau commune
+  PRIVATE_NETWORK = "192.168.100"
+  
+  # ============================================
+  # Kali Linux - Machine d'attaque
+  # ============================================
+  config.vm.define "kali" do |kali|
+    kali.vm.box = "kalilinux/rolling"
+    kali.vm.hostname = "kali-attacker"
+    
+    # Configuration réseau
+    kali.vm.network "private_network", ip: "#{PRIVATE_NETWORK}.10"
+    
+    # Configuration VirtualBox
+    kali.vm.provider "virtualbox" do |vb|
+      vb.name = "Kali-Linux-Attacker"
+      vb.memory = "4096"
+      vb.cpus = 2
+      vb.gui = false
+      
+      # Optimisations
+      vb.customize ["modifyvm", :id, "--vram", "128"]
+      vb.customize ["modifyvm", :id, "--clipboard", "bidirectional"]
+      vb.customize ["modifyvm", :id, "--draganddrop", "bidirectional"]
+    end
+    
+    # Provisioning - Installation des outils
+    kali.vm.provision "shell", inline: <<-SHELL
+      apt-get update
+      apt-get upgrade -y
+      
+      # Installation des outils essentiels (si pas déjà installés)
+      apt-get install -y \
+        nmap metasploit-framework \
+        burpsuite hydra wireshark \
+        sqlmap nikto john \
+        netcat-openbsd netdiscover \
+        gobuster dirb wfuzz \
+        exploitdb aircrack-ng \
+        recon-ng theHarvester \
+        responder crackmapexec \
+        enum4linux smbclient \
+        curl wget git vim
+      
+      # Configuration de Metasploit
+      systemctl start postgresql
+      systemctl enable postgresql
+      msfdb init
+      
+      echo "[+] Kali Linux configuré avec succès!"
+      echo "[+] IP: #{PRIVATE_NETWORK}.10"
+    SHELL
+  end
+  
+  # ============================================
+  # Metasploitable 2 - Cible vulnérable
+  # ============================================
+  config.vm.define "metasploitable" do |meta|
+    meta.vm.box = "rapid7/metasploitable-linux"
+    meta.vm.hostname = "metasploitable"
+    
+    # Configuration réseau
+    meta.vm.network "private_network", ip: "#{PRIVATE_NETWORK}.20"
+    
+    # Forwarding de ports pour accès depuis l'hôte
+    meta.vm.network "forwarded_port", guest: 21, host: 2121    # FTP
+    meta.vm.network "forwarded_port", guest: 22, host: 2222    # SSH
+    meta.vm.network "forwarded_port", guest: 80, host: 8080    # HTTP
+    meta.vm.network "forwarded_port", guest: 3306, host: 3306  # MySQL
+    
+    # Configuration VirtualBox
+    meta.vm.provider "virtualbox" do |vb|
+      vb.name = "Metasploitable2-Target"
+      vb.memory = "1024"
+      vb.cpus = 1
+      vb.gui = false
+    end
+    
+    # Note: Metasploitable est intentionnellement vulnérable, pas de provisioning
+  end
+  
+  # ============================================
+  # Ubuntu Server - Serveur cible
+  # ============================================
+  config.vm.define "ubuntu" do |ubuntu|
+    ubuntu.vm.box = "ubuntu/jammy64"
+    ubuntu.vm.hostname = "ubuntu-server"
+    
+    # Configuration réseau
+    ubuntu.vm.network "private_network", ip: "#{PRIVATE_NETWORK}.30"
+    ubuntu.vm.network "forwarded_port", guest: 80, host: 8081
+    ubuntu.vm.network "forwarded_port", guest: 22, host: 2223
+    
+    # Configuration VirtualBox
+    ubuntu.vm.provider "virtualbox" do |vb|
+      vb.name = "Ubuntu-Server-Target"
+      vb.memory = "2048"
+      vb.cpus = 2
+      vb.gui = false
+    end
+    
+    # Provisioning - Installation LAMP + services vulnérables
+    ubuntu.vm.provision "shell", inline: <<-SHELL
+      apt-get update
+      apt-get upgrade -y
+      
+      # Installation LAMP Stack
+      apt-get install -y apache2 mysql-server php libapache2-mod-php php-mysql
+      
+      # Installation services additionnels
+      apt-get install -y openssh-server vsftpd samba telnetd
+      
+      # Configuration FTP (intentionnellement peu sécurisé pour le lab)
+      echo "anonymous_enable=YES" >> /etc/vsftpd.conf
+      echo "write_enable=YES" >> /etc/vsftpd.conf
+      systemctl restart vsftpd
+      
+      # Création utilisateur de test
+      useradd -m -s /bin/bash testuser
+      echo "testuser:password123" | chpasswd
+      
+      # Page web de test
+      cat > /var/www/html/index.php <<'EOF'
+<?php
+  echo "<h1>Ubuntu Server - Lab de Cybersécurité</h1>";
+  echo "<p>Serveur: " . php_uname() . "</p>";
+  echo "<p>PHP Version: " . phpversion() . "</p>";
+  
+  // Vulnérabilité intentionnelle: SQL injection
+  if(isset($_GET['id'])) {
+    $id = $_GET['id'];
+    echo "<p>User ID: $id</p>";
+  }
+?>
+EOF
+      
+      echo "[+] Ubuntu Server configuré avec succès!"
+      echo "[+] IP: #{PRIVATE_NETWORK}.30"
+      echo "[+] Services: HTTP (80), SSH (22), FTP (21)"
+    SHELL
+  end
+  
+  # ============================================
+  # pfSense Firewall - Routeur et segmentation (optionnel)
+  # ============================================
+  config.vm.define "pfsense", autostart: false do |pfsense|
+    pfsense.vm.box = "generic/freebsd13"
+    pfsense.vm.hostname = "pfsense-fw"
+    
+    # Configuration réseau: 2 interfaces
+    pfsense.vm.network "private_network", ip: "#{PRIVATE_NETWORK}.1"   # LAN
+    pfsense.vm.network "private_network", ip: "10.0.0.1"              # WAN
+    
+    pfsense.vm.provider "virtualbox" do |vb|
+      vb.name = "pfSense-Firewall"
+      vb.memory = "1024"
+      vb.cpus = 1
+      vb.gui = false
+    end
+  end
+  
+  # ============================================
+  # Windows 10 - Cible Windows (optionnel)
+  # ============================================
+  config.vm.define "windows", autostart: false do |win|
+    win.vm.box = "gusztavvargadr/windows-10"
+    win.vm.hostname = "win10-target"
+    
+    win.vm.network "private_network", ip: "#{PRIVATE_NETWORK}.40"
+    win.vm.network "forwarded_port", guest: 3389, host: 3389  # RDP
+    
+    win.vm.provider "virtualbox" do |vb|
+      vb.name = "Windows10-Target"
+      vb.memory = "4096"
+      vb.cpus = 2
+      vb.gui = true
+      vb.customize ["modifyvm", :id, "--vram", "128"]
+    end
+    
+    # Désactiver Windows Defender pour les tests
+    win.vm.provision "shell", inline: <<-SHELL
+      Set-MpPreference -DisableRealtimeMonitoring $true
+      Write-Host "Windows 10 configuré pour le lab"
+    SHELL
+  end
+  
+end
+
+# ============================================
+# DOCUMENTATION D'UTILISATION
+# ============================================
+#
+# Démarrer toutes les VMs principales :
+#   vagrant up
+#
+# Démarrer une VM spécifique :
+#   vagrant up kali
+#   vagrant up metasploitable
+#   vagrant up ubuntu
+#
+# Démarrer les VMs optionnelles :
+#   vagrant up pfsense
+#   vagrant up windows
+#
+# Se connecter en SSH :
+#   vagrant ssh kali
+#   vagrant ssh ubuntu
+#
+# Voir le statut :
+#   vagrant status
+#
+# Suspendre les VMs :
+#   vagrant suspend
+#
+# Arrêter les VMs :
+#   vagrant halt
+#
+# Supprimer les VMs :
+#   vagrant destroy
+#
+# Snapshot (sauvegarde) :
+#   vagrant snapshot save nom_snapshot
+#   vagrant snapshot restore nom_snapshot
+#   vagrant snapshot list
+#
+# ============================================
+# TOPOLOGIE RÉSEAU
+# ============================================
+#
+# Réseau: 192.168.100.0/24
+#
+# pfSense FW:       192.168.100.1 (optionnel)
+# Kali Linux:       192.168.100.10
+# Metasploitable:   192.168.100.20
+# Ubuntu Server:    192.168.100.30
+# Windows 10:       192.168.100.40 (optionnel)
+#
+# ============================================
+# ACCÈS DEPUIS L'HÔTE
+# ============================================
+#
+# Metasploitable HTTP: http://localhost:8080
+# Ubuntu Server HTTP:  http://localhost:8081
+# Ubuntu SSH:          ssh testuser@localhost -p 2223
+# Windows RDP:         rdesktop localhost:3389
+#
+# ============================================
+# AVERTISSEMENT SÉCURITÉ
+# ============================================
+#
+# ⚠️ Cet environnement contient des systèmes
+#    VOLONTAIREMENT VULNÉRABLES
+#
+# - Utiliser UNIQUEMENT pour l'apprentissage
+# - JAMAIS connecter à un réseau de production
+# - TOUJOURS isoler du réseau principal
+# - Détruire après utilisation
+#

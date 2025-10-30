@@ -1,0 +1,265 @@
+---
+# Playbook Ansible pour configuration automatique du Lab de Cybersécurité
+# Usage: ansible-playbook -i inventory lab_setup.yml
+
+- name: Configuration complète du Lab de Cybersécurité
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    lab_network: "192.168.100.0/24"
+    lab_gateway: "192.168.100.1"
+    kali_ip: "192.168.100.10"
+    metasploitable_ip: "192.168.100.20"
+    ubuntu_ip: "192.168.100.30"
+    
+  tasks:
+    # ============================================
+    # Tâches communes à toutes les machines
+    # ============================================
+    - name: Mise à jour du système
+      apt:
+        update_cache: yes
+        upgrade: dist
+      when: ansible_os_family == "Debian"
+    
+    - name: Installation des outils de base
+      apt:
+        name:
+          - vim
+          - git
+          - curl
+          - wget
+          - net-tools
+          - tcpdump
+        state: present
+      when: ansible_os_family == "Debian"
+    
+    - name: Activer IP forwarding
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        reload: yes
+
+# ============================================
+# Configuration spécifique Kali Linux
+# ============================================
+- name: Configuration Kali Linux (Attaquant)
+  hosts: kali
+  become: yes
+  
+  tasks:
+    - name: Installation des outils de pentesting
+      apt:
+        name:
+          - nmap
+          - metasploit-framework
+          - burpsuite
+          - hydra
+          - wireshark
+          - sqlmap
+          - nikto
+          - john
+          - netcat-openbsd
+          - exploitdb
+          - aircrack-ng
+        state: present
+    
+    - name: Démarrer PostgreSQL pour Metasploit
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+    
+    - name: Initialiser Metasploit database
+      command: msfdb init
+      args:
+        creates: /usr/share/metasploit-framework/config/database.yml
+    
+    - name: Créer structure de dossiers pour le lab
+      file:
+        path: "/root/lab/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - recon
+        - exploit
+        - loot
+        - reports
+        - scripts
+    
+    - name: Télécharger SecLists wordlists
+      git:
+        repo: https://github.com/danielmiessler/SecLists.git
+        dest: /usr/share/wordlists/SecLists
+        depth: 1
+      ignore_errors: yes
+    
+    - name: Configurer aliases Bash
+      blockinfile:
+        path: /root/.bashrc
+        block: |
+          # Aliases Lab Cyber
+          alias ll='ls -alh'
+          alias msf='msfconsole -q'
+          alias scan-quick='nmap -T4 -F'
+          alias http-server='python3 -m http.server 8000'
+
+# ============================================
+# Configuration Metasploitable (Cible)
+# ============================================
+- name: Configuration Metasploitable (Cible vulnérable)
+  hosts: metasploitable
+  become: yes
+  
+  tasks:
+    - name: Configurer IP statique
+      template:
+        src: templates/network-interfaces.j2
+        dest: /etc/network/interfaces
+      notify: restart networking
+    
+    - name: Démarrer les services vulnérables
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - vsftpd
+        - ssh
+        - apache2
+        - smbd
+      ignore_errors: yes
+    
+    - name: Configurer FTP anonyme (vulnérable)
+      lineinfile:
+        path: /etc/vsftpd.conf
+        line: "{{ item }}"
+      loop:
+        - "anonymous_enable=YES"
+        - "write_enable=YES"
+      notify: restart vsftpd
+    
+    - name: Autoriser SSH root login (vulnérable)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin yes'
+      notify: restart ssh
+    
+    - name: Créer utilisateurs de test
+      user:
+        name: "{{ item.name }}"
+        password: "{{ item.password | password_hash('sha512') }}"
+        shell: /bin/bash
+      loop:
+        - { name: 'testuser', password: 'password' }
+        - { name: 'admin', password: 'admin' }
+        - { name: 'service', password: 'service' }
+
+# ============================================
+# Configuration Ubuntu Server (Serveur cible)
+# ============================================
+- name: Configuration Ubuntu Server
+  hosts: ubuntu
+  become: yes
+  
+  tasks:
+    - name: Installation LAMP stack
+      apt:
+        name:
+          - apache2
+          - mysql-server
+          - php
+          - libapache2-mod-php
+          - php-mysql
+        state: present
+    
+    - name: Installation services additionnels
+      apt:
+        name:
+          - openssh-server
+          - vsftpd
+          - samba
+        state: present
+    
+    - name: Démarrer Apache
+      systemd:
+        name: apache2
+        state: started
+        enabled: yes
+    
+    - name: Démarrer MySQL
+      systemd:
+        name: mysql
+        state: started
+        enabled: yes
+    
+    - name: Créer page web de test
+      copy:
+        dest: /var/www/html/index.php
+        content: |
+          <?php
+          echo "<h1>Ubuntu Server - Lab de Cybersécurité</h1>";
+          echo "<p>Serveur: " . php_uname() . "</p>";
+          echo "<p>PHP Version: " . phpversion() . "</p>";
+          ?>
+        mode: '0644'
+    
+    - name: Créer utilisateur de test
+      user:
+        name: testuser
+        password: "{{ 'password123' | password_hash('sha512') }}"
+        shell: /bin/bash
+
+# ============================================
+# Handlers
+# ============================================
+  handlers:
+    - name: restart networking
+      systemd:
+        name: networking
+        state: restarted
+    
+    - name: restart vsftpd
+      systemd:
+        name: vsftpd
+        state: restarted
+    
+    - name: restart ssh
+      systemd:
+        name: ssh
+        state: restarted
+
+# ============================================
+# Playbook de vérification
+# ============================================
+- name: Vérification finale du lab
+  hosts: kali
+  become: yes
+  
+  tasks:
+    - name: Tester connectivité Metasploitable
+      command: ping -c 2 {{ metasploitable_ip }}
+      register: ping_meta
+      ignore_errors: yes
+    
+    - name: Tester connectivité Ubuntu
+      command: ping -c 2 {{ ubuntu_ip }}
+      register: ping_ubuntu
+      ignore_errors: yes
+    
+    - name: Afficher résultats
+      debug:
+        msg: |
+          ========================================
+          Configuration du Lab Terminée!
+          ========================================
+          
+          Kali Linux: {{ kali_ip }}
+          Metasploitable: {{ metasploitable_ip }} - {% if ping_meta.rc == 0 %}✓ OK{% else %}✗ FAIL{% endif %}
+          Ubuntu Server: {{ ubuntu_ip }} - {% if ping_ubuntu.rc == 0 %}✓ OK{% else %}✗ FAIL{% endif %}
+          
+          Le lab est prêt à être utilisé!
